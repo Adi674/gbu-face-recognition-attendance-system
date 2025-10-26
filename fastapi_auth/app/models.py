@@ -20,13 +20,13 @@ class ActivityType(str, enum.Enum):
 
 
 # ============================================
-# TABLE 1: users (Authentication)
+# TABLE 1: users (Authentication) - MATCHES YOUR SCHEMA
 # ============================================
 class User(Base):
     __tablename__ = "users"
     
-    user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    email = Column(String(255), unique=True, nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
     role = Column(SmallInteger, nullable=False)  # 1=admin, 2=school, 3=teacher
     name = Column(String(255), nullable=False)
@@ -211,7 +211,7 @@ class SchoolActivity(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
     roll_no = Column(String(50), ForeignKey('student_profile.roll_no', ondelete='SET NULL', onupdate='CASCADE'))
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
-    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow)
     
     # Relationships
     user = relationship("User", back_populates="school_activities")
