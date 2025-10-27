@@ -5,26 +5,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================
-# JWT Configuration
+# JWT CONFIGURATION
 # ============================================
-SECRET_KEY = os.getenv(
-    "SECRET_KEY", 
-    "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"  # Change this!
-)
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # ============================================
-# Database Configuration - PostgreSQL (Supabase)
+# DATABASE CONFIGURATION
 # ============================================
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    # Fallback for local testing (update with your actual credentials)
-    "postgresql://postgres:password@localhost:5432/attendance_db"
+    "postgresql://myuser:mypassword@localhost:5432/attendance_db"
 )
 
 # ============================================
-# Environment Info
+# EMAIL SMTP CONFIGURATION
 # ============================================
-ENV = os.getenv("ENV", "development")  # development, production
-DEBUG = ENV == "development"
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "your-email@gmail.com")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "your-app-password")
+
+# ============================================
+# VECTOR DATABASE CONFIGURATION
+# ============================================
+VECTOR_DB_URL = os.getenv("VECTOR_DB_URL", "http://localhost:6333")
+VECTOR_DB_API_KEY = os.getenv("VECTOR_DB_API_KEY", "")
+VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION_NAME", "student_faces")
+
+# ============================================
+# ROLE DEFINITIONS
+# ============================================
+class UserRole:
+    ADMIN = 1
+    SCHOOL = 2
+    TEACHER = 3
