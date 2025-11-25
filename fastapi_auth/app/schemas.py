@@ -5,7 +5,7 @@ import uuid
 
 # Existing User schemas
 class UserCreate(BaseModel):
-    email: EmailStr
+    email: str 
     password: str
     
     @validator('password')
@@ -34,7 +34,7 @@ class TokenData(BaseModel):
 
 # NEW: Teacher schemas (MISSING FROM YOUR SCHEMAS)
 class TeacherCreate(BaseModel):
-    email: EmailStr
+    email: str  
     password: str
     name: str
     phone_number: Optional[str] = None
@@ -62,7 +62,7 @@ class StudentCreate(BaseModel):
     roll_no: str
     name: str
     phone_number: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     semester: int
     year: int
     school_id: int
