@@ -1,14 +1,14 @@
-from sqlalchemy import Column, Integer, String, SmallInteger, Boolean, TIMESTAMP, Text, ForeignKey, CheckConstraint
+from sqlalchemy import Column, Integer, String, SmallInteger, Boolean, TIMESTAMP, Text, ForeignKey, CheckConstraint, Float
 from sqlalchemy.dialects.postgresql import UUID, ENUM
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
 from .database import Base
+import enum
 
 # ============================================
-# ENUM Type Definition
+# ENUM Type Definitions
 # ============================================
-import enum
 
 class ActivityType(str, enum.Enum):
     add_student = "add_student"
@@ -18,9 +18,14 @@ class ActivityType(str, enum.Enum):
     update_teacher = "update_teacher"
     update_student = "update_student"
 
+class AttendanceStatus(str, enum.Enum):
+    present = "present"
+    absent = "absent"
+    proxy = "proxy"
+    manual = "manual"
 
 # ============================================
-# TABLE 1: users (Authentication) - MATCHES YOUR SCHEMA
+# TABLE 1: users (Authentication)
 # ============================================
 class User(Base):
     __tablename__ = "users"
@@ -39,9 +44,9 @@ class User(Base):
     
     # Relationships
     teacher_profile = relationship("TeacherProfile", back_populates="user", uselist=False)
-    attendance_registers = relationship("AttendanceRegister", back_populates="user")
+    attendance_sessions = relationship("AttendanceSession", back_populates="teacher_user")
     school_activities = relationship("SchoolActivity", back_populates="user")
-
+    login_logs = relationship("LoginLog", back_populates="user")
 
 # ============================================
 # TABLE 2: school
@@ -59,7 +64,6 @@ class School(Base):
     teachers = relationship("TeacherProfile", back_populates="school")
     subjects = relationship("Subject", back_populates="school")
 
-
 # ============================================
 # TABLE 3: department
 # ============================================
@@ -76,34 +80,49 @@ class Department(Base):
     classes = relationship("Class", back_populates="department")
     students = relationship("StudentProfile", back_populates="department")
 
-
 # ============================================
-# TABLE 4: class
+# TABLE 4: class (renamed to avoid Python keyword)
 # ============================================
 class Class(Base):
     __tablename__ = "class"
     
     class_id = Column(Integer, primary_key=True, autoincrement=True)
     class_name = Column(String(255), nullable=False)
-    department_id = Column(Integer, ForeignKey('department.department_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    department_id = Column(Integer, ForeignKey('department.department_id', ondelete='CASCADE'), nullable=False)
     
     # Relationships
     department = relationship("Department", back_populates="classes")
+    sections = relationship("Section", back_populates="class_")
     subjects = relationship("Subject", back_populates="class_")
-    attendance_registers = relationship("AttendanceRegister", back_populates="class_")
-
 
 # ============================================
-# TABLE 5: subject
+# TABLE 5: section (NEW)
+# ============================================
+class Section(Base):
+    __tablename__ = "section"
+    
+    section_id = Column(Integer, primary_key=True, autoincrement=True)
+    section_name = Column(String(50), nullable=False)  # A, B, C, etc.
+    class_id = Column(Integer, ForeignKey('class.class_id', ondelete='CASCADE'), nullable=False)
+    total_students = Column(Integer, default=0)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    # Relationships
+    class_ = relationship("Class", back_populates="sections")
+    students = relationship("StudentProfile", back_populates="section")
+    attendance_sessions = relationship("AttendanceSession", back_populates="section")
+
+# ============================================
+# TABLE 6: subject
 # ============================================
 class Subject(Base):
     __tablename__ = "subject"
     
     course_code = Column(String(20), primary_key=True)
     subject_name = Column(String(255), nullable=False)
-    school_id = Column(Integer, ForeignKey('school.school_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    school_id = Column(Integer, ForeignKey('school.school_id', ondelete='CASCADE'), nullable=False)
     semester = Column(Integer, nullable=False)
-    class_id = Column(Integer, ForeignKey('class.class_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    class_id = Column(Integer, ForeignKey('class.class_id', ondelete='CASCADE'), nullable=False)
     
     __table_args__ = (
         CheckConstraint('semester BETWEEN 1 AND 8', name='check_semester_range'),
@@ -112,11 +131,10 @@ class Subject(Base):
     # Relationships
     school = relationship("School", back_populates="subjects")
     class_ = relationship("Class", back_populates="subjects")
-    attendance_registers = relationship("AttendanceRegister", back_populates="subject")
-
+    attendance_sessions = relationship("AttendanceSession", back_populates="subject")
 
 # ============================================
-# TABLE 6: student_profile
+# TABLE 7: student_profile (UPDATED)
 # ============================================
 class StudentProfile(Base):
     __tablename__ = "student_profile"
@@ -127,9 +145,13 @@ class StudentProfile(Base):
     email = Column(String(255), unique=True)
     semester = Column(Integer)
     year = Column(Integer)
-    school_id = Column(Integer, ForeignKey('school.school_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    department_id = Column(Integer, ForeignKey('department.department_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    profile_photo_url = Column(Text)  # NEW: for face recognition
+    face_enrolled = Column(Boolean, default=False)  # NEW: face recognition status
+    school_id = Column(Integer, ForeignKey('school.school_id', ondelete='CASCADE'), nullable=False)
+    department_id = Column(Integer, ForeignKey('department.department_id', ondelete='CASCADE'), nullable=False)
+    section_id = Column(Integer, ForeignKey('section.section_id', ondelete='SET NULL'))  # NEW
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
         CheckConstraint('semester BETWEEN 1 AND 8', name='check_student_semester'),
@@ -138,80 +160,130 @@ class StudentProfile(Base):
     # Relationships
     school = relationship("School", back_populates="students")
     department = relationship("Department", back_populates="students")
-    attendance_logs = relationship("AttendanceLog", back_populates="student")
+    section = relationship("Section", back_populates="students")
+    attendance_records = relationship("AttendanceRecord", back_populates="student")
     school_activities = relationship("SchoolActivity", back_populates="student")
 
-
 # ============================================
-# TABLE 7: teacher_profile
+# TABLE 8: teacher_profile
 # ============================================
 class TeacherProfile(Base):
     __tablename__ = "teacher_profile"
     
     teacher_id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE', onupdate='CASCADE'), unique=True, nullable=False)
-    school_id = Column(Integer, ForeignKey('school.school_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE'), unique=True, nullable=False)
+    school_id = Column(Integer, ForeignKey('school.school_id', ondelete='CASCADE'), nullable=False)
     teacher_name = Column(String(255), nullable=False)
     teacher_email = Column(String(255), unique=True)
     
     # Relationships
     user = relationship("User", back_populates="teacher_profile")
     school = relationship("School", back_populates="teachers")
-    attendance_registers = relationship("AttendanceRegister", back_populates="teacher")
-
+    attendance_sessions = relationship("AttendanceSession", back_populates="teacher")
 
 # ============================================
-# TABLE 8: attendance_register
+# TABLE 9: attendance_session (NEW - replaces attendance_register)
 # ============================================
-class AttendanceRegister(Base):
-    __tablename__ = "attendance_register"
+class AttendanceSession(Base):
+    __tablename__ = "attendance_session"
     
-    unique_code = Column(String(10), primary_key=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    course_code = Column(String(20), ForeignKey('subject.course_code', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    class_id = Column(Integer, ForeignKey('class.class_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    teacher_id = Column(Integer, ForeignKey('teacher_profile.teacher_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    session_id = Column(Integer, primary_key=True, autoincrement=True)
+    unique_code = Column(String(10), unique=True, nullable=False, index=True)
+    teacher_id = Column(Integer, ForeignKey('teacher_profile.teacher_id', ondelete='CASCADE'), nullable=False)
+    teacher_user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
+    class_id = Column(Integer, ForeignKey('class.class_id', ondelete='CASCADE'), nullable=False)
+    section_id = Column(Integer, ForeignKey('section.section_id', ondelete='CASCADE'), nullable=False)
+    course_code = Column(String(20), ForeignKey('subject.course_code', ondelete='CASCADE'))
+    
+    # Time management
+    created_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    expires_at = Column(TIMESTAMP, nullable=False)
+    is_active = Column(Boolean, default=True)
+    closed_at = Column(TIMESTAMP)
+    
+    # Stats
+    total_present = Column(Integer, default=0)
+    total_absent = Column(Integer, default=0)
+    total_proxy = Column(Integer, default=0)
+    total_manual = Column(Integer, default=0)
     
     # Relationships
-    user = relationship("User", back_populates="attendance_registers")
-    subject = relationship("Subject", back_populates="attendance_registers")
-    class_ = relationship("Class", back_populates="attendance_registers")
-    teacher = relationship("TeacherProfile", back_populates="attendance_registers")
-    attendance_logs = relationship("AttendanceLog", back_populates="register")
-
+    teacher = relationship("TeacherProfile", back_populates="attendance_sessions")
+    teacher_user = relationship("User", back_populates="attendance_sessions")
+    section = relationship("Section", back_populates="attendance_sessions")
+    subject = relationship("Subject", back_populates="attendance_sessions")
+    attendance_records = relationship("AttendanceRecord", back_populates="session")
+    proxy_records = relationship("ProxyRecord", back_populates="session")
 
 # ============================================
-# TABLE 9: attendance_logs
+# TABLE 10: attendance_record (UPDATED)
 # ============================================
-class AttendanceLog(Base):
-    __tablename__ = "attendance_logs"
+class AttendanceRecord(Base):
+    __tablename__ = "attendance_record"
     
     attendance_id = Column(Integer, primary_key=True, autoincrement=True)
-    unique_code = Column(String(10), ForeignKey('attendance_register.unique_code', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    roll_no = Column(String(50), ForeignKey('student_profile.roll_no', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
+    session_id = Column(Integer, ForeignKey('attendance_session.session_id', ondelete='CASCADE'), nullable=False)
+    roll_no = Column(String(50), ForeignKey('student_profile.roll_no', ondelete='CASCADE'), nullable=False)
+    
+    # Attendance details
+    status = Column(ENUM(AttendanceStatus, name='attendance_status_enum'), default=AttendanceStatus.present)
     is_manual = Column(Boolean, default=False)
-    is_rejected = Column(Boolean, default=False)
     is_proxy = Column(Boolean, default=False)
-    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    # Face recognition details
+    face_confidence = Column(Float)  # 0-100
+    face_match = Column(Boolean)
+    
+    # Timestamps
+    marked_at = Column(TIMESTAMP, default=datetime.utcnow)
     
     # Relationships
-    register = relationship("AttendanceRegister", back_populates="attendance_logs")
-    student = relationship("StudentProfile", back_populates="attendance_logs")
-
+    session = relationship("AttendanceSession", back_populates="attendance_records")
+    student = relationship("StudentProfile", back_populates="attendance_records")
 
 # ============================================
-# TABLE 10: school_activity (Audit Log)
+# TABLE 11: proxy_record (NEW)
+# ============================================
+class ProxyRecord(Base):
+    __tablename__ = "proxy_record"
+    
+    proxy_id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, ForeignKey('attendance_session.session_id', ondelete='CASCADE'), nullable=False)
+    roll_no = Column(String(50), ForeignKey('student_profile.roll_no', ondelete='CASCADE'), nullable=False)
+    marked_by_teacher_id = Column(Integer, ForeignKey('teacher_profile.teacher_id', ondelete='CASCADE'), nullable=False)
+    reason = Column(Text)
+    marked_at = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    # Relationships
+    session = relationship("AttendanceSession", back_populates="proxy_records")
+
+# ============================================
+# TABLE 12: login_log (NEW)
+# ============================================
+class LoginLog(Base):
+    __tablename__ = "login_log"
+    
+    log_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
+    login_time = Column(TIMESTAMP, default=datetime.utcnow)
+    ip_address = Column(String(45))
+    user_agent = Column(Text)
+    
+    # Relationships
+    user = relationship("User", back_populates="login_logs")
+
+# ============================================
+# TABLE 13: school_activity (Audit Log)
 # ============================================
 class SchoolActivity(Base):
     __tablename__ = "school_activity"
     
     activity_id = Column(Integer, primary_key=True, autoincrement=True)
     activity_name = Column(ENUM(ActivityType, name='activity_type'), nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE', onupdate='CASCADE'), nullable=False)
-    roll_no = Column(String(50), ForeignKey('student_profile.roll_no', ondelete='SET NULL', onupdate='CASCADE'))
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False)
+    roll_no = Column(String(50), ForeignKey('student_profile.roll_no', ondelete='SET NULL'))
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
-    updated_at = Column(TIMESTAMP, default=datetime.utcnow)
+    updated_at = Column(TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     user = relationship("User", back_populates="school_activities")
