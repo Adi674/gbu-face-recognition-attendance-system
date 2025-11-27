@@ -1,4 +1,4 @@
-# Azure DevOps Pipeline for Face Recognition System
+# Azure DevOps Pipeline for Face Recognition System (Using Existing Database)
 trigger:
 - main
 - develop
@@ -9,7 +9,7 @@ variables:
   vmImageName: 'ubuntu-latest'
   
   # Azure Variables (Set these in Azure DevOps Variable Groups)
-  azureServiceConnection: 'azure-service-connection' # Create this in Azure DevOps
+  azureServiceConnection: 'azure-service-connection'
   webAppName: 'face-recognition-app-$(Build.BuildId)'
   resourceGroupName: 'face-recognition-rg'
   location: 'East US'
@@ -44,11 +44,6 @@ stages:
         python -m py_compile run.py
       displayName: 'Run tests and syntax check'
 
-    - script: |
-        # Create requirements.txt if not exists or update it
-        pip freeze > requirements_frozen.txt
-      displayName: 'Generate frozen requirements'
-
     - task: ArchiveFiles@2
       displayName: 'Archive application'
       inputs:
@@ -62,12 +57,12 @@ stages:
       artifact: drop
 
 - stage: DeployInfrastructure
-  displayName: Deploy Infrastructure
+  displayName: Deploy App Service Only
   dependsOn: Build
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
   jobs:
   - deployment: DeployInfra
-    displayName: Deploy Azure Infrastructure
+    displayName: Deploy Azure App Service
     pool:
       vmImage: $(vmImageName)
     environment: 'production'
@@ -78,24 +73,64 @@ stages:
           - download: current
             artifact: drop
 
-          - task: AzureResourceManagerTemplateDeployment@3
-            displayName: 'Deploy Azure Resources'
+          - task: AzureCLI@2
+            displayName: 'Create Resource Group'
             inputs:
-              deploymentScope: 'Resource Group'
-              azureResourceManagerConnection: '$(azureServiceConnection)'
-              subscriptionId: '$(subscriptionId)' # Set in variable group
-              action: 'Create Or Update Resource Group'
-              resourceGroupName: '$(resourceGroupName)'
-              location: '$(location)'
-              templateLocation: 'Linked artifact'
-              csmFile: '$(Pipeline.Workspace)/drop/azure-infrastructure.json'
-              overrideParameters: |
-                -appName "$(webAppName)"
-                -location "$(location)"
-                -sku "B1"
-                -postgresqlAdminLogin "$(postgresqlAdminLogin)"
-                -postgresqlAdminPassword "$(postgresqlAdminPassword)"
-              deploymentMode: 'Incremental'
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az group create --name $(resourceGroupName) --location "$(location)"
+
+          - task: AzureCLI@2
+            displayName: 'Create App Service Plan'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az appservice plan create \
+                  --name "$(webAppName)-plan" \
+                  --resource-group $(resourceGroupName) \
+                  --sku B1 \
+                  --is-linux \
+                  --location "$(location)"
+
+          - task: AzureCLI@2
+            displayName: 'Create Web App'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az webapp create \
+                  --name $(webAppName) \
+                  --resource-group $(resourceGroupName) \
+                  --plan "$(webAppName)-plan" \
+                  --runtime "PYTHON|3.12" \
+                  --startup-file "python run.py"
+
+          - task: AzureCLI@2
+            displayName: 'Configure Web App Settings'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az webapp config appsettings set \
+                  --name $(webAppName) \
+                  --resource-group $(resourceGroupName) \
+                  --settings \
+                    DATABASE_URL="$(databaseUrl)" \
+                    SECRET_KEY="$(secretKey)" \
+                    PINECONE_API_KEY="$(pineconeApiKey)" \
+                    PINECONE_ENVIRONMENT="$(pineconeEnvironment)" \
+                    PINECONE_INDEX_NAME="face-recognition" \
+                    ENV="production" \
+                    PORT="8000" \
+                    ACCESS_TOKEN_EXPIRE_MINUTES="30" \
+                    SCM_DO_BUILD_DURING_DEPLOYMENT="true" \
+                    PYTHON_VERSION="3.12"
 
 - stage: Deploy
   displayName: Deploy Application
@@ -126,78 +161,45 @@ stages:
               runtimeStack: 'PYTHON|3.12'
               startUpCommand: 'python run.py'
 
-          - task: AzureAppServiceSettings@1
-            displayName: 'Configure App Settings'
-            inputs:
-              azureSubscription: '$(azureServiceConnection)'
-              appName: '$(webAppName)'
-              resourceGroupName: '$(resourceGroupName)'
-              appSettings: |
-                [
-                  {
-                    "name": "DATABASE_URL",
-                    "value": "$(databaseUrl)",
-                    "slotSetting": false
-                  },
-                  {
-                    "name": "SECRET_KEY",
-                    "value": "$(secretKey)",
-                    "slotSetting": false
-                  },
-                  {
-                    "name": "PINECONE_API_KEY",
-                    "value": "$(pineconeApiKey)",
-                    "slotSetting": false
-                  },
-                  {
-                    "name": "PINECONE_ENVIRONMENT",
-                    "value": "$(pineconeEnvironment)",
-                    "slotSetting": false
-                  },
-                  {
-                    "name": "ENV",
-                    "value": "production",
-                    "slotSetting": false
-                  },
-                  {
-                    "name": "PORT",
-                    "value": "8000",
-                    "slotSetting": false
-                  }
-                ]
-
 - stage: PostDeployment
   displayName: Post Deployment Tasks
   dependsOn: Deploy
   condition: succeeded()
   jobs:
-  - job: InitializeDatabase
-    displayName: Initialize Database
+  - job: HealthCheck
+    displayName: Application Health Check
     pool:
       vmImage: $(vmImageName)
     steps:
-    - download: current
-      artifact: drop
-
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: '$(pythonVersion)'
-
     - script: |
-        # Extract the deployment package
-        cd $(Pipeline.Workspace)/drop
-        unzip $(Build.BuildId).zip
+        echo "Waiting for application to start..."
+        sleep 30
         
-        # Install dependencies
-        pip install -r requirements.txt
-        
-        # Run database initialization
-        export DATABASE_URL="$(databaseUrl)"
-        python fastapi_auth/setup_initial_data.py
-      displayName: 'Initialize Database Schema and Data'
-
-    - script: |
-        # Health check
         echo "Performing health check on deployed application..."
-        curl -f https://$(webAppName).azurewebsites.net/health || exit 1
+        # Get the app URL
+        APP_URL="https://$(webAppName).azurewebsites.net"
+        echo "Checking: $APP_URL/health"
+        
+        # Health check with retry
+        for i in {1..5}; do
+          if curl -f "$APP_URL/health"; then
+            echo "✅ Health check passed!"
+            exit 0
+          else
+            echo "❌ Health check failed. Attempt $i/5"
+            sleep 10
+          fi
+        done
+        
+        echo "❌ Health check failed after 5 attempts"
+        exit 1
       displayName: 'Application Health Check'
+
+    - script: |
+        echo "🎉 Deployment Summary:"
+        echo "App URL: https://$(webAppName).azurewebsites.net"
+        echo "Health Check: https://$(webAppName).azurewebsites.net/health"
+        echo "API Docs: https://$(webAppName).azurewebsites.net/docs"
+        echo "Database: Using existing Supabase database"
+        echo "Face Recognition: Enabled with Pinecone"
+      displayName: 'Deployment Summary'
