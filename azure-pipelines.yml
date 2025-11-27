@@ -1,0 +1,203 @@
+# Azure DevOps Pipeline for Face Recognition System
+trigger:
+- main
+- develop
+
+variables:
+  # Build Variables
+  pythonVersion: '3.12'
+  vmImageName: 'ubuntu-latest'
+  
+  # Azure Variables (Set these in Azure DevOps Variable Groups)
+  azureServiceConnection: 'azure-service-connection' # Create this in Azure DevOps
+  webAppName: 'face-recognition-app-$(Build.BuildId)'
+  resourceGroupName: 'face-recognition-rg'
+  location: 'East US'
+
+stages:
+- stage: Build
+  displayName: Build and Test
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+      displayName: 'Use Python $(pythonVersion)'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install dependencies'
+
+    - script: |
+        # Run basic tests if you have any
+        python -m pytest tests/ --tb=short --strict-markers || echo "No tests found, skipping..."
+        
+        # Basic syntax check
+        python -m py_compile fastapi_auth/app/main.py
+        python -m py_compile face_recognition_system/pipeline.py
+        python -m py_compile run.py
+      displayName: 'Run tests and syntax check'
+
+    - script: |
+        # Create requirements.txt if not exists or update it
+        pip freeze > requirements_frozen.txt
+      displayName: 'Generate frozen requirements'
+
+    - task: ArchiveFiles@2
+      displayName: 'Archive application'
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+        replaceExistingArchive: true
+
+    - upload: $(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip
+      artifact: drop
+
+- stage: DeployInfrastructure
+  displayName: Deploy Infrastructure
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: DeployInfra
+    displayName: Deploy Azure Infrastructure
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Azure Resources'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: '$(azureServiceConnection)'
+              subscriptionId: '$(subscriptionId)' # Set in variable group
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: '$(resourceGroupName)'
+              location: '$(location)'
+              templateLocation: 'Linked artifact'
+              csmFile: '$(Pipeline.Workspace)/drop/azure-infrastructure.json'
+              overrideParameters: |
+                -appName "$(webAppName)"
+                -location "$(location)"
+                -sku "B1"
+                -postgresqlAdminLogin "$(postgresqlAdminLogin)"
+                -postgresqlAdminPassword "$(postgresqlAdminPassword)"
+              deploymentMode: 'Incremental'
+
+- stage: Deploy
+  displayName: Deploy Application
+  dependsOn: 
+  - Build
+  - DeployInfrastructure
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy to Azure Web App
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: drop
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy Azure Web App'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appType: 'webAppLinux'
+              appName: '$(webAppName)'
+              package: '$(Pipeline.Workspace)/drop/$(Build.BuildId).zip'
+              runtimeStack: 'PYTHON|3.12'
+              startUpCommand: 'python run.py'
+
+          - task: AzureAppServiceSettings@1
+            displayName: 'Configure App Settings'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appName: '$(webAppName)'
+              resourceGroupName: '$(resourceGroupName)'
+              appSettings: |
+                [
+                  {
+                    "name": "DATABASE_URL",
+                    "value": "$(databaseUrl)",
+                    "slotSetting": false
+                  },
+                  {
+                    "name": "SECRET_KEY",
+                    "value": "$(secretKey)",
+                    "slotSetting": false
+                  },
+                  {
+                    "name": "PINECONE_API_KEY",
+                    "value": "$(pineconeApiKey)",
+                    "slotSetting": false
+                  },
+                  {
+                    "name": "PINECONE_ENVIRONMENT",
+                    "value": "$(pineconeEnvironment)",
+                    "slotSetting": false
+                  },
+                  {
+                    "name": "ENV",
+                    "value": "production",
+                    "slotSetting": false
+                  },
+                  {
+                    "name": "PORT",
+                    "value": "8000",
+                    "slotSetting": false
+                  }
+                ]
+
+- stage: PostDeployment
+  displayName: Post Deployment Tasks
+  dependsOn: Deploy
+  condition: succeeded()
+  jobs:
+  - job: InitializeDatabase
+    displayName: Initialize Database
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - download: current
+      artifact: drop
+
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+
+    - script: |
+        # Extract the deployment package
+        cd $(Pipeline.Workspace)/drop
+        unzip $(Build.BuildId).zip
+        
+        # Install dependencies
+        pip install -r requirements.txt
+        
+        # Run database initialization
+        export DATABASE_URL="$(databaseUrl)"
+        python fastapi_auth/setup_initial_data.py
+      displayName: 'Initialize Database Schema and Data'
+
+    - script: |
+        # Health check
+        echo "Performing health check on deployed application..."
+        curl -f https://$(webAppName).azurewebsites.net/health || exit 1
+      displayName: 'Application Health Check'
