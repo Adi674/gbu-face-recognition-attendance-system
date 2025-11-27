@@ -9,6 +9,9 @@ from datetime import timedelta
 from . import models, schemas, utils, auth
 from .database import Base, engine, get_db
 from .config import ACCESS_TOKEN_EXPIRE_MINUTES
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
+from fastapi.requests import Request
 
 # FIXED - Try multiple import paths:
 try:
@@ -35,6 +38,16 @@ app = FastAPI(
     version="2.1.0",
     description="School management system with integrated face recognition for student attendance"
 )
+
+templates = Jinja2Templates(directory="templates")
+
+
+@app.get("/enroll-ui", response_class=HTMLResponse, summary="Web Interface for Enrollment")
+async def get_enroll_ui(request: Request):
+    """
+    Serves the HTML page for manual student enrollment
+    """
+    return templates.TemplateResponse("enroll.html", {"request": request})
 
 @app.on_event("startup")
 def startup():

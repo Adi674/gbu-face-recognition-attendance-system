@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Enroll Student - Face Recognition</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; }
+        button { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #45a049; }
+        #status { margin-top: 20px; padding: 10px; border-radius: 4px; display: none; }
+        .success { background-color: #dff0d8; color: #3c763d; border: 1px solid #d6e9c6; }
+        .error { background-color: #f2dede; color: #a94442; border: 1px solid #ebccd1; }
+    </style>
+</head>
+<body>
+    <h2>📸 Enroll Student Faces</h2>
+    
+    <div class="form-group">
+        <label>1. Access Token (Login to get this):</label>
+        <input type="text" id="token" placeholder="Paste your Bearer Token here..." required>
+    </div>
+
+    <div class="form-group">
+        <label>2. Student Roll Number:</label>
+        <input type="text" id="roll_no" placeholder="e.g. 235lcs003" required>
+    </div>
+
+    <div class="form-group">
+        <label>3. Select Photos (Select multiple or a folder):</label>
+        <input type="file" id="photos" multiple accept="image/*" required>
+    </div>
+
+    <button onclick="uploadFiles()">Enroll Student</button>
+
+    <div id="status"></div>
+
+    <script>
+        async function uploadFiles() {
+            const token = document.getElementById('token').value;
+            const rollNo = document.getElementById('roll_no').value;
+            const fileInput = document.getElementById('photos');
+            const statusDiv = document.getElementById('status');
+
+            if (!token || !rollNo || fileInput.files.length === 0) {
+                alert("Please fill in all fields!");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('roll_no', rollNo);
+            
+            // Append all selected files
+            for (let i = 0; i < fileInput.files.length; i++) {
+                formData.append('files', fileInput.files[i]);
+            }
+
+            statusDiv.style.display = 'block';
+            statusDiv.className = '';
+            statusDiv.innerHTML = '⏳ Uploading and processing... please wait...';
+
+            try {
+                const response = await fetch('/face-recognition/enroll-student', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    statusDiv.className = 'success';
+                    statusDiv.innerHTML = `✅ <b>Success!</b> ${result.message}<br>Images processed: ${result.images_processed}`;
+                } else {
+                    statusDiv.className = 'error';
+                    statusDiv.innerHTML = `❌ <b>Error:</b> ${result.detail || 'Unknown error'}`;
+                }
+            } catch (error) {
+                statusDiv.className = 'error';
+                statusDiv.innerHTML = `❌ <b>Network Error:</b> ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>
